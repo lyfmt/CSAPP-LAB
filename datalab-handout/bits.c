@@ -605,20 +605,70 @@ int howManyBits(int x) {
   1010 1111 1001
   1111 1111 1111
   0101 0000 0110
+  g谷老师让我二分
+  先将该数右移16位,若为0,则在高位在后十六位,反正则在前十六位
+  !(x>>16)对之取反,得1说明在后,反之在前
+  那我取一个计数器,count count+=16&(!(x>>16)<<31)>>31 这样处理了第一个情况
+  然后继续二分
+  如何判断下一次移位正确呢,也就是我下一次移位是24还是8
+  x1 = !(x>>16)
+  得0说明在前,得1说明在后
+  +!x1&(8&(!(x>>24)<<31)>>31)
+ 
+
+  // int count1 = !(dx>>1)+!(dx>>2)+!(dx>>3)+!(dx>>4);
+  // int count2 = !(dx>>5)+!(dx>>6)+!(dx>>7)+!(dx>>8);
+  // int count3 = !(dx>>9)+!(dx>>10)+!(dx>>11)+!(dx>>12);
+  // int count4 = !(dx>>13)+!(dx>>14)+!(dx>>15)+!(dx>>16);
+  // int count5 = !(dx>>17)+!(dx>>18)+!(dx>>19)+!(dx>>20);
+  // int count6 = !(dx>>21)+!(dx>>22)+!(dx>>23)+!(dx>>24);
+  // int count7 = !(dx>>25)+!(dx>>26)+!(dx>>27)+!(dx>>28);
+  // int count8 = !(dx>>29)+!(dx>>30)+!(dx>>31);
+  // int count = count1+count2+count3+count4+count5+count6+count7+count8+!dx;
+ x1&(8&(!(x>>8)<<31)>>31)
+
   */
+
+  //在前为真1,在后为假0
+  //更新x,若在前,则x=x>>16,否则依然为x
+  int x1,x2,x3,x4,x5;
+  int dx1,dx2,dx3,dx4;
+  int check1,check2,check3,check4,check5;
+  int x10,x20,x30,x40,x50;
   int head = x>>31;
   int dx = x^head;
+  int count=1;
+  x10 = dx>>16;
+  x1 = !!x10;
 
-  int count1 = !(dx>>1)+!(dx>>2)+!(dx>>3)+!(dx>>4);
-  int count2 = !(dx>>5)+!(dx>>6)+!(dx>>7)+!(dx>>8);
-  int count3 = !(dx>>9)+!(dx>>10)+!(dx>>11)+!(dx>>12);
-  int count4 = !(dx>>13)+!(dx>>14)+!(dx>>15)+!(dx>>16);
-  int count5 = !(dx>>17)+!(dx>>18)+!(dx>>19)+!(dx>>20);
-  int count6 = !(dx>>21)+!(dx>>22)+!(dx>>23)+!(dx>>24);
-  int count7 = !(dx>>25)+!(dx>>26)+!(dx>>27)+!(dx>>28);
-  int count8 = !(dx>>29)+!(dx>>30)+!(dx>>31);
-  int count = count1+count2+count3+count4+count5+count6+count7+count8+!dx;
-  return 34+~count;
+  check1 = (x1<<31)>>31;
+  count += 16&(check1);
+  dx1 = (check1&x10)|(~check1&dx);
+
+  x20 = dx1>>8;
+  x2 = !!x20;
+  check2 = (x2<<31)>>31;
+  count+= 8&(check2);
+  dx2 = (check2&x20)|(~check2&dx1);
+
+  x30 = dx2>>4;
+  x3 = !!x30;
+  check3 = (x3<<31)>>31;
+  count+= 4&(check3);
+  dx3 = (check3&x30)|(~check3&dx2);
+
+  x40 = dx3>>2;
+  x4 = !!x40;
+  check4 = (x4<<31)>>31;
+  count+= 2&(check4);
+  dx4 = (check4&x40)|(~check4&dx3);
+
+  x50 = dx4>>1;
+  x5 = !!x50;
+  check5 = (x5<<31)>>31;
+  count+= 1&(check5);
+  return count+!!dx;
+
 }
 //float
 /* 
@@ -633,7 +683,48 @@ int howManyBits(int x) {
  *   Rating: 4
  */
 unsigned floatScale2(unsigned uf) {
-  return 2;
+  /* 
+  复习完浮点数表示后,可以开始操作了
+  根据哈基米所说,uf已经是浮点数表示了
+  所以,我们只需要根据各部分,修改增删后返回即可
+  首先从*2考虑,代表乘以2().
+  将阶码部分乘以2,即为乘以2了,对应操作就是阶码加一
+  这可以应对大多数情况,但是对于一些特殊情况,我们需要特殊处理
+  1 阶码全1 表示NaN,我们需要将阶码提取出进行判断
+  若为全一,则直接返回原数值
+  2 阶码全0
+  如果尾数不为0,也没事
+  但如果尾数为0,则可能表达最大值或最小值,我们也直接返回即可
+  那接下来就是操作了
+  提取阶码绝对是最先进行的一步
+  将uf右移,阶码放在最后的位置,然后将前面的符号全部变成一或0
+  变成一后,若等于-1,则说明是NaN,直接返回
+  若变为0后,得到0,则说明是非规格数,我们需要接着判断尾数是否全为0
+    将尾数前的数字全部改成0,判断是否得0
+    若得零,返回
+  经过检验后,我们对提取出的阶码加一,再位移回去,然后和只有尾数的情况或之
+  返回
+  */
+  unsigned  exp = (uf>>23)&255;
+  // printf("exp = %d\n",exp);
+  unsigned frac = (uf<<9)>>9;
+  // printf("frac = %d\n",frac);
+  unsigned sign = (uf>>31)<<31;
+  if(exp==255){
+    return uf;
+  }else if(exp==0){
+    if(frac==0){
+    return uf;
+    }
+    frac=frac<<1;
+  }else{
+    exp++;
+  }
+  // printf("exp2 = %d\n",exp);
+  exp=exp<<23;
+  uf = exp|frac|sign;
+
+  return uf;
 }
 /* 
  * floatFloat2Int - Return bit-level equivalent of expression (int) f
@@ -648,7 +739,93 @@ unsigned floatScale2(unsigned uf) {
  *   Rating: 4
  */
 int floatFloat2Int(unsigned uf) {
-  return 2;
+  /* 
+  让我实现浮点数到整数的转化啊
+  这不得先复习一下
+  首先整数的范围是-2^(32)+1 -- 2^(31)
+  float的表示是
+  sign x1 exp x8 frac x23
+  这里sign没太大问题,只有负数到0变化记得处理
+  exp经过转化得E
+  bias=127
+  exp - bias =E
+  而E最大为32
+  那么exp<139
+  且exp<127直接返回0
+  处理了异常情况后,正常的取整应该如何做
+  根据公式 (-1)^s*(1+frac)*2^E
+  所以一个值就是直接2^e
+  另一个是frac*2^E
+  也就是frac溢出去的部分要算上
+  而小数溢出的上限,是可以全部溢出的
+  如何接收这部分是一个问题
+  我们可以就此分别考虑,只要将溢出的值求出,即为完成
+  我们分次运输出里面的数值
+  将E与十三判断,多则<<13,少则运输E
+  将多出的数加到一个0上,其也随之左移,然后依次运出直到E用尽
+  得到的数和2^E相加,若为负则返回特殊值,否则直接返回
+  等等,突然发现我要转化的是有符号数,所以还要考虑更多的情况
+  正数溢出成负数已经解决了,还有负数溢出成正数
+  符号位的处理也是关键,这么看E最大应该是31,正数负数如何表示呢,边界条件也不一样
+  也就是负值溢出,存入的地方也得是负值
+  也就是我在赋值前要统一赋上符号位
+  不对,如果是正数我直接加上溢出部分,小数我减去不就是了
+  然后判断是否变号,如果是则返回溢出值
+  思考一下E的取值
+  最大负值
+  1000 0000 0000 
+  为-2^32
+  对应到里头,就是
+  1 0010 0000 0000 0000
+  因为正数使用32直接就溢出了,所以我先做特判
+  */
+  int bias = 127;
+  int SPE = 0x80000000u;
+  int F;
+  int move;
+  //取出几个数
+  //先int用着看看,反正也没什么影响
+  unsigned componnentHead = uf>>31;
+  int sign = componnentHead<<31;
+  int exp = (uf<<1)>>24;
+  int frac = (uf<<9)>>9;
+  int E =0;
+  int M = 0;
+  //计算E值
+   E = exp-bias;
+  //存储frac
+  if(E==31&&componnentHead==1&&frac==0){
+    return 0x80000000;
+  }
+  if(E>30){
+    return SPE; 
+  }else if(E<0){
+      return 0;
+  }else{
+    //处理2^E
+    // printf("E = %d\n",E);
+    F = (1<<E);
+
+    // printf("F = %d\n",F);
+    //处理frac
+    move = 23-E;
+    if(move>0){
+      M = frac>>move;
+    }else{
+      move = -move;
+      M = frac<<move;
+    }
+    if(componnentHead==1){
+      F = ~F+1;
+      M = ~M+1;
+    }
+    F = F + M;
+    if((F>>31)<<31!=sign){
+      return SPE;
+    }
+    return F;
+  }
+
 }
 /* 
  * floatPower2 - Return bit-level equivalent of the expression 2.0^x
@@ -664,5 +841,45 @@ int floatFloat2Int(unsigned uf) {
  *   Rating: 4
  */
 unsigned floatPower2(int x) {
-    return 2;
+  /* 
+  胜利就在眼前
+  这题是让我返回2的x次方
+  涉及溢出,先看看浮点数所能表达的最大值
+  0 1111 1110 1111 1111x23
+  是2的254-127 = 127次方加上后面小弟的127次方,后面无限逼近1
+  所以上限是2的128次方
+  大于等于均返回+INF
+  接下来看最小
+  0 0000 0001 0000 x23
+  是2的1-127 = -126次方
+  所以这就是最小值,比这个还小则返回零
+  这就确定了E的范围[-126,127] 
+  接下来就是表示2^x
+  0 x 000x23
+  x是一个这个范围内的整数
+  因为根据E的范围,所以x也是这个范围[-126,127]
+  但是x要经过转化后才能放入其中
+  答案是+127
+  x = x+127
+  感觉就这?  
+  感情INF是无穷大要我手动构建啊
+  */
+  unsigned ans =0;
+  unsigned exp;
+  int E;
+  int bias = 127;
+  unsigned toINF = 255;
+  unsigned INF = toINF<<23;
+  if(x<-126){
+    return 0;
+  }else if(x>127){
+    return INF;
+  }else{
+    E = x;
+    exp = E+bias;
+    exp = exp<<23;
+    ans = ans|exp;
+    return ans;
+  }
+
 }
