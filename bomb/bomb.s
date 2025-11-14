@@ -561,7 +561,7 @@ Disassembly of section .text:
   40118d:	48 83 c6 04          	add    $0x4,%rsi
   401191:	48 83 fe 18          	cmp    $0x18,%rsi
   401195:	74 14                	je     4011ab <phase_6+0xb7>
-  401197:	8b 0c 34             	mov    (%rsp,%rsi,1),%ecx
+  ; 401197:	8b 0c 34             	mov    (%rsp,%rsi,1),%ecx
   40119a:	83 f9 01             	cmp    $0x1,%ecx
   40119d:	7e e4                	jle    401183 <phase_6+0x8f>
   40119f:	b8 01 00 00 00       	mov    $0x1,%eax
@@ -573,6 +573,7 @@ Disassembly of section .text:
   4011ba:	48 89 d9             	mov    %rbx,%rcx
   4011bd:	48 8b 10             	mov    (%rax),%rdx
   4011c0:	48 89 51 08          	mov    %rdx,0x8(%rcx)
+  //将rcx
   4011c4:	48 83 c0 08          	add    $0x8,%rax
   4011c8:	48 39 f0             	cmp    %rsi,%rax
   4011cb:	74 05                	je     4011d2 <phase_6+0xde>
@@ -632,7 +633,7 @@ Disassembly of section .text:
   401265:	76 05                	jbe    40126c <secret_phase+0x2a>
   401267:	e8 ce 01 00 00       	call   40143a <explode_bomb>
   40126c:	89 de                	mov    %ebx,%esi
-  40126e:	bf f0 30 60 00       	mov    $0x6030f0,%edi
+  40126e:	bf f0 30 60 00       	mov    $0x6030f0,%edi (edi)的值为0x24
   401273:	e8 8c ff ff ff       	call   401204 <fun7>
   401278:	83 f8 02             	cmp    $0x2,%eax
   40127b:	74 05                	je     401282 <secret_phase+0x40>
