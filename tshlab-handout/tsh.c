@@ -108,6 +108,17 @@ void sio_error(char s[]);
 typedef void handler_t(int);
 handler_t *Signal(int signum, handler_t *handler);
 
+/* 
+    my tool function
+*/
+void myRun(int bg , struct cmdline_tokens *tok,char *cmdline);
+void myQuit();
+void myJobs();
+void myBg();
+void myFg();
+void myKill(struct cmdline_tokens *tok);
+void myNohup();
+
 
 /*
  * main - The shell's main routine 
@@ -127,12 +138,15 @@ main(int argc, char **argv)
     while ((c = getopt(argc, argv, "hvp")) != EOF) {
         switch (c) {
         case 'h':             /* print help message */
+            printf("This is h \n");
             usage();
             break;
         case 'v':             /* emit additional diagnostic info */
+            printf("This is v \n");
             verbose = 1;
             break;
         case 'p':             /* don't print a prompt */
+            printf("This is p \n");
             emit_prompt = 0;  /* handy for automatic testing */
             break;
         default:
@@ -209,9 +223,193 @@ eval(char *cmdline)
         return;
     if (tok.argv[0] == NULL) /* ignore empty lines */
         return;
+    // 先完成系统内置指令部分吧,简单点 来个quit先
+    // 由于功能的多样,需要将每个指令独立呈现,也就是定义函数专门来写
+    // 其将指令的类型使用数值存储,故此我们使用跳转表switch合适
+    switch(tok.builtins){
+        case BUILTIN_NONE:
+        myRun(bg,&tok,cmdline);
+        break;
+        case BUILTIN_QUIT:
+        myQuit();
+        break;
+        case BUILTIN_JOBS:
+        myJobs();
+        break;
+        case BUILTIN_BG:
+        myBg();
+        break;
+        case BUILTIN_FG:
+        myFg();
+        break;
+        case BUILTIN_KILL:
+        myKill(&tok);
+        break;
+        case BUILTIN_NOHUP:
+        myNohup();
+        break;
+        default:
+        printf("unkowned error\n");
+        exit(0);
+    }
 
     return;
 }
+/*****************
+ * Eval Tools 
+ *****************/
+
+/* 
+    run tool
+
+*/
+    void myRun(int bg,struct cmdline_tokens *tok,char *cmdline){
+        
+        sigset_t newSigSet, oldSigSet;
+        sigemptyset(&newSigSet);
+        sigaddset(&newSigSet,SIGCHLD);
+        // block the signal
+
+        // 为了保证add和fork的原子性,我们采取阻塞
+        if(sigprocmask(SIG_BLOCK,&newSigSet,&oldSigSet)==-1){
+            sio_error("block error");
+            return;
+        }
+
+        pid_t pid = fork();
+        if(pid<0){
+            sio_error("429 exhausted");
+        }
+        if(pid == 0){
+            // 子进程,必须解除掉
+            sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
+            /* this is the child */
+            setpgid(0,0);
+            /* 执行程序逻辑 */
+            if(!((tok->infile)==NULL)){
+                int fd = open(tok->infile,O_RDONLY);
+                if(fd<0){
+                    sio_error("file not exist");
+                    exit(1);
+                }
+                dup2(fd,STDIN_FILENO);
+                close(fd);
+            }
+            if(!((tok->outfile)==NULL)){
+                int fd = open(tok->outfile,O_WRONLY|O_CREAT|O_TRUNC,0644);
+                if(fd<0){
+                    sio_error("crate failed");
+                    exit(1);
+                }
+                dup2(fd,STDOUT_FILENO);
+                close(fd);
+            }
+            if(execve(tok->argv[0],tok->argv,environ) < 0){
+                printf("%s : Command not found \n",tok->argv[0]);
+                exit(0);
+            }
+        }else {
+            /* this is the father */
+            if(bg == 0){
+                addjob(job_list,pid,FG,cmdline);
+                sigset_t blockSet;
+                sigemptyset(&blockSet);
+                while(pid==fgpid(job_list)){
+                    sigsuspend(&blockSet);
+                }
+                sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
+            }else {
+                addjob(job_list,pid,BG,cmdline);
+                sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
+                printf("[%d] (%d) %s \n ",pid2jid(pid),pid,cmdline);
+            }
+        }
+
+    }
+ /* 
+    quit tool
+ */
+    void myQuit(){
+        printf("quit\n");
+        printf ("\n");
+        fflush(stdout);
+        fflush(stderr);
+        exit(0);
+    }
+
+ /* 
+    job tool
+    this tool need me to list all jobs running
+ */
+    void myJobs(){
+        listjobs(job_list,STDOUT_FILENO);
+    }
+ /* 
+    bg tool
+ */
+    void myBg(){
+
+        printf("wait for realize\n");
+    }
+/* 
+    FG tool
+*/
+    void myFg(){
+
+        printf("wait for realize\n");
+    }
+/* 
+    Kill tool
+    这里需要判断两种情况,一种是jobID,一种是Pid
+    如果是jobId,需要去掉%后再去找到pid
+    如果是pid,直接转化成数字去除即可
+*/
+    void myKill(struct cmdline_tokens *tok){
+        struct job_t *job ;
+        char *arg = tok->argv[1];
+        pid_t pid;
+        if(arg == NULL){
+            printf("command need arguments\n");
+            return;
+        }
+        if(arg[0] == '%'){
+            arg++;
+            int jid = atoi(arg);
+            job=getjobjid(job_list,jid);
+            if(job==NULL){
+                printf("jid is not exist\n");
+                return ;
+            }
+            pid=job->pid;
+        }else {
+            pid = atoi(arg);
+            job = getjobpid(job_list,pid);
+            if(job==NULL){
+                printf("the pid is not exist\n");
+                return ;
+            }
+        }
+
+        if(!(kill(-pid,SIGINT))){
+            deletejob(job_list,pid); // 这里应该由signal handler 来处理 而不是靠这个
+            return;
+        }else{
+            sio_error("no such jobs");
+        }
+    }
+
+/* 
+    Nohup tool
+*/
+    void myNohup(){
+
+        printf("wait for realize\n");
+    }
+
+ /*****************
+ * End Eval Tools 
+ *****************/
+ 
 
 /* 
  * parseline - Parse the command line and build the argv array.
@@ -363,6 +561,18 @@ parseline(const char *cmdline, struct cmdline_tokens *tok)
         tok->argv[--tok->argc] = NULL;
 
     return is_bg;
+    /* 
+     大概明白怎么一回事了,简要总结一下
+     parseline 接收eval传来的参数进行解析,将得到的东西存入tok中
+     tok就是桥梁
+     parseline根据解析到的内容设置系统参数
+     将要存入的解析入infile中,要写入的存入outfile中
+     参数变量写入argv中
+     然后设置是否使用了系统内置函数
+     设置了是否在前台显示并返回
+    */
+
+
 }
 
 
@@ -380,6 +590,33 @@ parseline(const char *cmdline, struct cmdline_tokens *tok)
 void 
 sigchld_handler(int sig) 
 {
+    int olderrno = errno;
+    int status;
+    int signalId;
+    struct job_t *job ;
+    pid_t pid = waitpid(-1, &status, WNOHANG | WUNTRACED);
+    if(WIFEXITED(status)){
+    // 是否是exit或main导致的正常结束
+    if(!deletejob(job_list,pid)){
+        sio_error("delete errot");
+    }
+    }else if(WIFSIGNALED(status)){
+        // 是否是信号杀死的
+        signalId = WIFSIGNALED(status);
+        printf("pid:[%d] has been terminated by signal %d\n",pid,signalId);
+        if(!deletejob(job_list,pid)){
+            sio_error("delete error");
+        }
+    }else if(WIFSTOPPED(status)){
+        // 是否被信号停挂
+        signalId = WIFSTOPPED(status);
+        job=getjobpid(job_list,pid);
+        if(job!=NULL){
+        job->state=ST;
+        }
+        printf("pid:[%d] has been stopped by signal %d\n",pid,signalId);
+    }
+    errno =olderrno;
     return;
 }
 
@@ -391,9 +628,16 @@ sigchld_handler(int sig)
 void 
 sigint_handler(int sig) 
 {
+    int olderrno = errno; // 保存errno
+    pid_t pid = fgpid(job_list);
+    if((kill(-pid,SIGINT))!=0){
+        if(errno != ESRCH){
+        sio_error("kill error");
+        }
+    }
+    errno = olderrno;
     return;
 }
-
 /*
  * sigtstp_handler - The kernel sends a SIGTSTP to the shell whenever
  *     the user types ctrl-z at the keyboard. Catch it and suspend the
@@ -402,6 +646,14 @@ sigint_handler(int sig)
 void 
 sigtstp_handler(int sig) 
 {
+        int olderrno = errno; // 保存errno
+    pid_t pid = fgpid(job_list);
+    if((kill(-pid,SIGTSTP))!=0){
+        if(errno != ESRCH){
+        sio_error("kill error");
+        }
+    }
+    errno = olderrno;
     return;
 }
 
