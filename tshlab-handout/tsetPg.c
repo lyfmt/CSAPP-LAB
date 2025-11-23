@@ -22,7 +22,7 @@ int main(int argc, char **argv) {
         fflush(stdout); 
         
         // 睡眠 1 秒
-        sleep(1);
+        sleep(3);
         i++;
     }
     

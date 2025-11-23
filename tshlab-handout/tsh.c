@@ -72,7 +72,7 @@ struct cmdline_tokens {
         BUILTIN_KILL,
         BUILTIN_NOHUP} builtins;
 };
-
+pid_t theNearJobPid;
 /* End global variables */
 
 /* Function prototypes */
@@ -111,11 +111,10 @@ handler_t *Signal(int signum, handler_t *handler);
 /* 
     my tool function
 */
-void myRun(int bg , struct cmdline_tokens *tok,char *cmdline);
+void myRun(int isnohup,int bg , struct cmdline_tokens *tok,char *cmdline);
 void myQuit();
-void myJobs();
-void myBg();
-void myFg();
+void myJobs(struct cmdline_tokens *tok);
+void myBgorFg(int ops,struct cmdline_tokens *tok);
 void myKill(struct cmdline_tokens *tok);
 void myNohup();
 
@@ -228,25 +227,25 @@ eval(char *cmdline)
     // 其将指令的类型使用数值存储,故此我们使用跳转表switch合适
     switch(tok.builtins){
         case BUILTIN_NONE:
-        myRun(bg,&tok,cmdline);
+        myRun(0,bg,&tok,cmdline);
         break;
         case BUILTIN_QUIT:
         myQuit();
         break;
         case BUILTIN_JOBS:
-        myJobs();
+        myJobs(&tok);
         break;
         case BUILTIN_BG:
-        myBg();
+        myBgorFg(0,&tok);
         break;
         case BUILTIN_FG:
-        myFg();
+        myBgorFg(1,&tok);
         break;
         case BUILTIN_KILL:
         myKill(&tok);
         break;
         case BUILTIN_NOHUP:
-        myNohup();
+        myRun(1,bg,&tok,cmdline);
         break;
         default:
         printf("unkowned error\n");
@@ -263,12 +262,17 @@ eval(char *cmdline)
     run tool
 
 */
-    void myRun(int bg,struct cmdline_tokens *tok,char *cmdline){
+    void myRun(int isnohup,int bg,struct cmdline_tokens *tok,char *cmdline){
         
         sigset_t newSigSet, oldSigSet;
         sigemptyset(&newSigSet);
         sigaddset(&newSigSet,SIGCHLD);
         // block the signal
+
+        //判断nohup
+        if(isnohup&&tok->argv[1]==NULL){
+            return;
+        }
 
         // 为了保证add和fork的原子性,我们采取阻塞
         if(sigprocmask(SIG_BLOCK,&newSigSet,&oldSigSet)==-1){
@@ -281,6 +285,9 @@ eval(char *cmdline)
             sio_error("429 exhausted");
         }
         if(pid == 0){
+            if(isnohup){
+                signal(SIGHUP,SIG_IGN);
+            }
             // 子进程,必须解除掉
             sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
             /* this is the child */
@@ -289,7 +296,7 @@ eval(char *cmdline)
             if(!((tok->infile)==NULL)){
                 int fd = open(tok->infile,O_RDONLY);
                 if(fd<0){
-                    sio_error("file not exist");
+                    printf("file not exist\n");
                     exit(1);
                 }
                 dup2(fd,STDIN_FILENO);
@@ -298,20 +305,26 @@ eval(char *cmdline)
             if(!((tok->outfile)==NULL)){
                 int fd = open(tok->outfile,O_WRONLY|O_CREAT|O_TRUNC,0644);
                 if(fd<0){
-                    sio_error("crate failed");
-                    exit(1);
+                    printf("crate failed\n");
+                    exit(1) ;
                 }
                 dup2(fd,STDOUT_FILENO);
                 close(fd);
             }
-            if(execve(tok->argv[0],tok->argv,environ) < 0){
-                printf("%s : Command not found \n",tok->argv[0]);
+            if(execve(tok->argv[isnohup],&tok->argv[isnohup],environ) < 0){
+                printf("%s : Command not found \n",tok->argv[isnohup]);
                 exit(0);
             }
         }else {
             /* this is the father */
             if(bg == 0){
+                 if (setpgid(pid, 0) < 0) {
+            if (errno != EACCES) {
+                sio_puts("setpgid error\n"); 
+            }
+        }
                 addjob(job_list,pid,FG,cmdline);
+                theNearJobPid = pid;
                 sigset_t blockSet;
                 sigemptyset(&blockSet);
                 while(pid==fgpid(job_list)){
@@ -319,9 +332,11 @@ eval(char *cmdline)
                 }
                 sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
             }else {
+                setpgid(0,0);
                 addjob(job_list,pid,BG,cmdline);
+                theNearJobPid = pid;
                 sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
-                printf("[%d] (%d) %s \n ",pid2jid(pid),pid,cmdline);
+                printf("[%d] (%d) %s \n",pid2jid(pid),pid,cmdline);
             }
         }
 
@@ -341,22 +356,105 @@ eval(char *cmdline)
     job tool
     this tool need me to list all jobs running
  */
-    void myJobs(){
-        listjobs(job_list,STDOUT_FILENO);
+    void myJobs(struct cmdline_tokens *tok){
+        int fd = STDOUT_FILENO;
+
+            if(!((tok->outfile)==NULL)){
+                fd = open(tok->outfile,O_WRONLY|O_CREAT|O_TRUNC,0644);
+                if(fd<0){
+                    printf("crate failed\n");
+                    exit(1) ;
+                }
+                // dup2(fd,STDOUT_FILENO);
+            }
+        listjobs(job_list,fd);
+        if(fd!=STDOUT_FILENO){
+                close(fd);
+        }
     }
  /* 
-    bg tool
- */
-    void myBg(){
 
-        printf("wait for realize\n");
-    }
 /* 
-    FG tool
-*/
-    void myFg(){
+    FG / BG tool
+    需要根据参数判断
+    如果无参,则调取最近存入的程序作为前台
+    %n 恢复job为n的 表示job编号时,百分号不是必须的 不对,是都不是必须的,爱加不加
+    %str 以str为开头的job
+    %?str 包含str
+    %+ %% 等于无参
+    % - 恢复倒数第二个
+    其是我们在shell中实现的,而不是内核自带的
+    实现
+    找到进程
+    发送信号 SIGCONT保证运行
+    修改状态为前台
+    阻塞shell
 
-        printf("wait for realize\n");
+
+*/
+    void myBgorFg(int ops,struct cmdline_tokens *tok){
+        sigset_t newSigSet, oldSigSet;
+        sigemptyset(&newSigSet);
+        sigaddset(&newSigSet,SIGCHLD);
+        int olderrno = errno;
+        struct job_t *job;
+        pid_t pid;
+        char *arg = tok->argv[1];
+        if(tok->argc==1){
+            pid=theNearJobPid;
+            job=getjobpid(job_list,pid);
+                    if(job==NULL){
+                    printf("error job not exit\n");
+                    return;
+                }
+        }else{
+            if(arg[0]=='%'){
+                if(arg[1]=='%'||arg[1]=='+'){
+                    pid=theNearJobPid;
+                    job = getjobpid(job_list,pid);
+                    if(job==NULL){
+                    printf("error job not exit\n");
+                    return;
+                }
+                }else{
+                    arg++;
+                    int jid = atoi(arg);
+                    job=getjobjid(job_list,jid);
+                    if(job==NULL){
+                    printf("error job not exit\n");
+                        return ;
+                    }
+                    pid=job->pid;
+                }
+            }else{
+                pid = atoi(arg);
+                job = getjobpid(job_list,pid);
+                if(job==NULL){
+                    printf("error job not exit\n");
+                    return;
+                }
+            }
+        }
+            sigprocmask(SIG_BLOCK,&newSigSet,&oldSigSet);
+        if(ops){
+            // FG
+            job->state=FG;
+            // block
+                sigset_t blockSet;
+                sigemptyset(&blockSet);
+                kill(-pid,SIGCONT);
+                // printf("[%d] (%d) %s\n", job->jid, job->pid, job->cmdline);
+                while(pid==fgpid(job_list)){
+                    sigsuspend(&blockSet);
+                }
+        }else{
+            // BG
+            job->state=BG;
+            kill(-pid,SIGCONT);
+            printf("[%d] (%d) %s\n", job->jid, job->pid, job->cmdline);
+        }
+        sigprocmask(SIG_SETMASK,&oldSigSet,NULL);
+       errno = olderrno; 
     }
 /* 
     Kill tool
@@ -368,16 +466,25 @@ eval(char *cmdline)
         struct job_t *job ;
         char *arg = tok->argv[1];
         pid_t pid;
+        int sig = SIGTERM;
         if(arg == NULL){
             printf("command need arguments\n");
             return;
+        }else if(arg[0]=='-'){
+            arg++;
+            sig=atoi(arg);
+            arg=tok->argv[2];
+            if(arg ==NULL){
+                printf("command need arguments\n");
+                return ;
+            }
         }
         if(arg[0] == '%'){
             arg++;
             int jid = atoi(arg);
             job=getjobjid(job_list,jid);
             if(job==NULL){
-                printf("jid is not exist\n");
+                printf("%%%d: No such job\n",jid);
                 return ;
             }
             pid=job->pid;
@@ -385,13 +492,12 @@ eval(char *cmdline)
             pid = atoi(arg);
             job = getjobpid(job_list,pid);
             if(job==NULL){
-                printf("the pid is not exist\n");
+                printf("%%%d: No such pid\n",pid);
                 return ;
             }
         }
-
-        if(!(kill(-pid,SIGINT))){
-            deletejob(job_list,pid); // 这里应该由signal handler 来处理 而不是靠这个
+        if(!(kill(-pid,sig))){
+            // 这里应该由signal handler 来处理 而不是靠这个
             return;
         }else{
             sio_error("no such jobs");
@@ -594,28 +700,53 @@ sigchld_handler(int sig)
     int status;
     int signalId;
     struct job_t *job ;
-    pid_t pid = waitpid(-1, &status, WNOHANG | WUNTRACED);
+    pid_t pid; 
+    while(((pid=waitpid(-1, &status, WNOHANG | WUNTRACED ))>0)) {
     if(WIFEXITED(status)){
     // 是否是exit或main导致的正常结束
-    if(!deletejob(job_list,pid)){
-        sio_error("delete errot");
-    }
+    deletejob(job_list,pid);
+    // if(!deletejob(job_list,pid)){
+    //     printf("delete error\n");
+    //     // return;
+    // }
     }else if(WIFSIGNALED(status)){
         // 是否是信号杀死的
-        signalId = WIFSIGNALED(status);
-        printf("pid:[%d] has been terminated by signal %d\n",pid,signalId);
-        if(!deletejob(job_list,pid)){
-            sio_error("delete error");
+        job = getjobpid(job_list,pid);
+        int signalId = WTERMSIG(status); 
+        if(job!=NULL){
+
+        // printf("Job [%d] (%d) terminated by signal %d\n",job->jid,pid,signalId);
+                sio_puts("Job [");
+                sio_putl(job->jid);
+                sio_puts("] (");
+                sio_putl(pid);
+                sio_puts(") terminated by signal ");
+                sio_putl(signalId);
+                sio_puts("\n");
+        deletejob(job_list,pid);
         }
+        // if(!deletejob(job_list,pid)){
+        //     printf("delete error\n");
+        //     // return;
+        // }
     }else if(WIFSTOPPED(status)){
         // 是否被信号停挂
-        signalId = WIFSTOPPED(status);
+        signalId = WSTOPSIG(status);
         job=getjobpid(job_list,pid);
         if(job!=NULL){
         job->state=ST;
+        // printf("Job [%d] (%d) stopped by signal %d\n",job->jid,pid,signalId);
+                sio_puts("Job [");
+                sio_putl(job->jid);
+                sio_puts("] (");
+                sio_putl(pid);
+                sio_puts(") stopped by signal ");
+                sio_putl(signalId);
+                sio_puts("\n");
         }
-        printf("pid:[%d] has been stopped by signal %d\n",pid,signalId);
+     }
     }
+
     errno =olderrno;
     return;
 }
@@ -632,9 +763,11 @@ sigint_handler(int sig)
     pid_t pid = fgpid(job_list);
     if((kill(-pid,SIGINT))!=0){
         if(errno != ESRCH){
-        sio_error("kill error");
+        printf("kill error\n");
+        return;
         }
     }
+    printf("\n");
     errno = olderrno;
     return;
 }
@@ -650,9 +783,11 @@ sigtstp_handler(int sig)
     pid_t pid = fgpid(job_list);
     if((kill(-pid,SIGTSTP))!=0){
         if(errno != ESRCH){
-        sio_error("kill error");
+        printf("kill error\n");
+        return ;
         }
     }
+    printf("\n");
     errno = olderrno;
     return;
 }
